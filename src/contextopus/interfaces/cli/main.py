@@ -1,0 +1,365 @@
+"""CLI transport: all domain operations use Application's shared registry."""
+
+from __future__ import annotations
+import argparse
+from importlib.metadata import version
+import json
+import os
+from pathlib import Path
+import sys
+
+
+def parser():
+    result = argparse.ArgumentParser(
+        prog="contextopus",
+        description="Persistent context for people and coding agents",
+    )
+    result.add_argument("--version", action="version", version="Contextopus " + version("contextopus-core"))
+    result.add_argument(
+        "--root", type=Path, help="Persistent data root (or CONTEXTOPUS_ROOT)"
+    )
+    result.add_argument("--context", help="Explicitly selected Context")
+    commands = result.add_subparsers(dest="command", required=True)
+    for name in ("init", "status", "doctor", "mcp"):
+        commands.add_parser(name)
+    web = commands.add_parser("web", help="Browse enabled modules through a local read-only web interface")
+    web.add_argument("--port", type=int, default=41860)
+    modules = commands.add_parser("modules", help="List and manage root-local modules")
+    module_actions = modules.add_subparsers(dest="module_action")
+    for action in ("install", "prepare", "enable", "disable", "update"):
+        command = module_actions.add_parser(action)
+        command.add_argument("module")
+        if action == "update":
+            command.add_argument("--source", required=True, type=Path)
+        elif action == "install":
+            command.add_argument("--source", type=Path, help="Trusted built module folder or ZIP")
+            command.add_argument("--plan", action="store_true", help="Validate source only; do not install")
+    root_binding = commands.add_parser(
+        "root", help="Inspect or explicitly bind the persistent default data root"
+    )
+    root_binding.add_argument("--set", dest="new_root", type=Path)
+    service = commands.add_parser("service")
+    service.add_argument("action", choices=("start", "stop", "restart", "status", "install"))
+    reconnect = commands.add_parser("reconnect", help="Refresh an existing native client connection")
+    reconnect.add_argument("client", choices=("codex", "claude-code", "opencode", "crush"))
+    reconnect.add_argument("--socket", type=Path)
+    reconnect.add_argument("--thread", dest="thread_id")
+    reconnect.add_argument("--client-url", help="Existing OpenCode server URL")
+    reconnect.add_argument("--directory", type=Path, help="Project in the existing OpenCode server")
+    settings = commands.add_parser("settings")
+    settings.add_argument(
+        "--set", dest="changes", help="JSON object of proposed values"
+    )
+    settings.add_argument(
+        "--apply", action="store_true", help="Apply the displayed preview"
+    )
+    model = commands.add_parser(
+        "setupmodel", help="Inspect hardware or preview/apply atomic embedding setup"
+    )
+    model.add_argument(
+        "--hardware",
+        action="store_true",
+        help="Explicit PyTorch/CUDA/MPS diagnostic; no weights loaded",
+    )
+    model.add_argument(
+        "--config", type=Path, help="Validated embedding provider/profile JSON file"
+    )
+    model.add_argument(
+        "--chunking", type=Path, help="Explicit tokenizer/chunking JSON file"
+    )
+    model.add_argument(
+        "--device",
+        default="auto",
+        help="auto, cpu, cuda[:index] or mps; remote providers use auto",
+    )
+    model.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply reviewed settings through an atomic index rebuild",
+    )
+    relocation = commands.add_parser("relocation")
+    relocation.add_argument("destination", type=Path)
+    relocation.add_argument("--apply", action="store_true")
+    integration = commands.add_parser("integrate")
+    integration.add_argument(
+        "client", choices=("codex", "claude-code", "cursor", "opencode", "crush", "hermes", "antigravity")
+    )
+    integration.add_argument('--skill', action='append', dest='selected_skills', help='Deliver only this canonical skill; repeat; omitted reuses saved selection')
+    integration.add_argument('--all-skills', action='store_true', help='Reset selection to all enabled entrypoints')
+    integration.add_argument('--alias', action='append', default=None, help='Canonical name=installed name; replaces saved alias map when supplied')
+    integration.add_argument('--reset-aliases', action='store_true', help='Clear user aliases and use full names')
+    integration_scope = integration.add_mutually_exclusive_group(required=True)
+    integration_scope.add_argument("--project", type=Path)
+    integration_scope.add_argument(
+        "--user", action="store_true", help="Merge the native user configuration"
+    )
+    integration.add_argument(
+        "--hermes-home", type=Path,
+        help="Native Hermes home or profile home (requires hermes --user; defaults to HERMES_HOME or the platform's native Hermes home)",
+    )
+    integration.add_argument(
+        "--native-plugin",
+        action="store_true",
+        help="Codex or Antigravity user cutover after native plugin installation; preserve old cache",
+    )
+    integration.add_argument(
+        "--config-only",
+        action="store_true",
+        help="Reuse already discoverable shared skills; install no second copy",
+    )
+    integration.add_argument(
+        "--legacy-skills",
+        type=Path,
+        help="Explicit old manually installed skill directory to upgrade; never a plugin cache",
+    )
+    integration.add_argument("--apply", action="store_true")
+    for name in ("query", "execute"):
+        operation = commands.add_parser(name)
+        operation.add_argument("operation")
+        operation.add_argument("--arguments", default="{}")
+    return result
+
+
+def root_binding_path():
+    from platformdirs import user_config_path
+
+    return user_config_path("Contextopus", appauthor=False) / "root.json"
+
+
+def default_root():
+    from platformdirs import user_data_path
+
+    if os.environ.get("CONTEXTOPUS_ROOT"):
+        return Path(os.environ["CONTEXTOPUS_ROOT"])
+    binding = root_binding_path()
+    if binding.is_file():
+        value = json.loads(binding.read_text(encoding="utf-8"))
+        selected = Path(value["root"])
+        if not selected.is_absolute():
+            raise ValueError("Configured root must be absolute")
+        return selected
+    return user_data_path("Contextopus", appauthor=False)
+
+
+def bind_root(root):
+    import tempfile
+    from contextopus.core.storage import StorageLayout
+
+    root = StorageLayout.resolve(root).root
+    path = root_binding_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".root-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump({"root": str(root)}, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return {
+        "root": str(root),
+        "binding": str(path),
+        "environment_override": bool(os.environ.get("CONTEXTOPUS_ROOT")),
+    }
+
+
+def emit(value):
+    print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
+
+
+def main(argv=None):
+    args = parser().parse_args(argv)
+    try:
+        root = (
+            (
+                args.root
+                or (
+                    args.new_root
+                    if args.command == "root" and args.new_root
+                    else default_root()
+                )
+            )
+            .expanduser()
+            .resolve()
+        )
+        if args.command == "root":
+            emit(
+                bind_root(args.new_root)
+                if args.new_root
+                else {"root": str(root), "binding": str(root_binding_path())}
+            )
+            return 0
+        if args.command == "service":
+            from contextopus.integrations import service
+
+            emit(getattr(service, args.action)(root))
+            return 0
+        if args.command == "reconnect":
+            from contextopus.integrations.reconnect import reconnect
+            emit(reconnect(args.client, root, socket=args.socket, thread_id=args.thread_id,
+                           client_url=args.client_url, directory=args.directory))
+            return 0
+        if args.command == "integrate":
+            from contextopus.integrations import plan, integrate
+
+            if args.all_skills and args.selected_skills:
+                raise ValueError('--all-skills and --skill are mutually exclusive')
+            if args.reset_aliases and args.alias:
+                raise ValueError('--reset-aliases and --alias are mutually exclusive')
+            aliases = {} if args.reset_aliases else None
+            if args.alias is not None:
+                aliases = {}
+                for assignment in args.alias:
+                    if assignment.count('=') != 1:
+                        raise ValueError('--alias requires canonical-name=installed-name')
+                    key, value = assignment.split('=', 1)
+                    if key in aliases:
+                        raise ValueError('Duplicate alias definition: ' + key)
+                    aliases[key] = value
+            preview = plan(
+                args.client,
+                Path.home() if args.user else args.project,
+                scope="user" if args.user else "project",
+                install_skills=not args.config_only,
+                native_plugin=args.native_plugin,
+                legacy_skills=args.legacy_skills,
+                root=root,
+                hermes_home=args.hermes_home,
+                selected_skills=[] if args.all_skills else args.selected_skills,
+                skill_aliases=aliases,
+            )
+            # Configuration content may contain credentials from other entries.
+            emit(
+                {
+                    "client": args.client,
+                    "removals": preview.get("removals", []),
+                    "preserved": preview.get("preserved", []),
+                    "module_errors": preview.get("module_errors", []),
+                    "entrypoints": preview.get("entrypoints", []),
+                    "files": [
+                        {"path": item["path"], "changed": item["changed"]}
+                        for item in preview["writes"]
+                    ],
+                }
+            )
+            if args.apply:
+                emit(integrate(preview))
+            return 0
+        if args.command == "mcp":
+            from contextopus.interfaces.mcp.server import run
+
+            run(root=root, transport="streamable-http", host="127.0.0.1", port=8765)
+            return 0
+        from contextopus.integrations.service import start, status
+        from contextopus.integrations.remote import RemoteApplication
+
+        if args.command == "init":
+            from contextopus.integrations.service import install
+            install(root)
+        elif (
+            args.command in ("status", "doctor") and status(root)["state"] == "stopped"
+        ):
+            emit({**status(root), "root_exists": root.is_dir(), "root": str(root)})
+            return 0
+        app = RemoteApplication(root, context=args.context, follow_pages=True)
+        if args.command == "web":
+            from contextopus.interfaces.web import run
+            try:
+                run(app, port=args.port)
+            finally:
+                app.close()
+            return 0
+        try:
+            if args.command == "setupmodel":
+                if args.hardware:
+                    if args.apply or args.config or args.chunking:
+                        raise ValueError(
+                            "--hardware is a diagnostic; use a separate setup preview/apply"
+                        )
+                    emit(app.query("core.model_hardware"))
+                else:
+                    arguments = {"device": args.device}
+                    if args.config:
+                        arguments["config"] = json.loads(
+                            args.config.read_text(encoding="utf-8")
+                        )
+                    if args.chunking:
+                        arguments["chunking"] = json.loads(
+                            args.chunking.read_text(encoding="utf-8")
+                        )
+                    preview = app.query("core.model_plan", arguments)
+                    emit(preview)
+                    if args.apply:
+                        emit(app.execute("core.model_apply", {"plan": preview}))
+            elif args.command == "settings":
+                if args.changes:
+                    preview = app.services.preview_settings(json.loads(args.changes))
+                    emit(preview)
+                    if args.apply:
+                        emit(app.services.apply_settings(preview["preview_revision"]))
+                elif args.apply:
+                    raise ValueError("--apply requires --set")
+                else:
+                    emit(app.services.settings())
+            elif args.command in ("query", "execute"):
+                emit(
+                    getattr(app, args.command)(
+                        args.operation, json.loads(args.arguments)
+                    )
+                )
+            elif args.command == "relocation":
+                preview = app.query(
+                    "core.relocation_plan",
+                    {"destination": str(args.destination.resolve())},
+                )
+                emit(preview)
+                if args.apply:
+                    emit(
+                        app.execute(
+                            "core.relocation_apply",
+                            {"plan_revision": preview["revision"]},
+                        )
+                    )
+            elif args.command == "modules":
+                if args.module_action:
+                    arguments = {"module": args.module}
+                    if args.module_action == "update":
+                        arguments["source"] = str(args.source.expanduser().resolve())
+                    if args.module_action == "install":
+                        if args.plan and args.source is None:
+                            raise ValueError('--plan requires --source')
+                        if args.source is not None:
+                            # Preserve symlink spelling: validation must reject it.
+                            arguments['source'] = str(args.source.expanduser().absolute())
+                            preview = app.query('core.module_source_plan', arguments)
+                            emit(preview)
+                            if args.plan:
+                                return 0
+                            arguments['source_revision'] = preview['revision']
+                    result = app.execute("core.module_" + args.module_action, arguments)
+                    emit(result)
+                    if (args.module_action == 'install' and args.source is not None
+                            and (not isinstance(result, dict) or result.get('state') != 'enabled')):
+                        raise RuntimeError('Module installation did not return enabled')
+                else:
+                    emit(app.query("core.modules"))
+            elif args.command in ("init", "doctor"):
+                emit(
+                    app.execute("core.init")
+                    if args.command == "init"
+                    else app.query("core.doctor")
+                )
+            else:
+                emit(app.services.status())
+        finally:
+            app.close()
+        return 0
+    except (ValueError, OSError, RuntimeError, KeyError) as exc:
+        print(f"contextopus: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

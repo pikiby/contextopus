@@ -1,0 +1,26 @@
+{
+  "id": "none",
+  "version": "2.0.0",
+  "purpose": "Return a stable page of materials or explicit fragments without a relevance cut.",
+  "parameters_schema": {
+    "type": "object",
+    "properties": {
+      "offset": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "page_size": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 1000
+      }
+    },
+    "additionalProperties": false
+  },
+  "defaults": {
+    "offset": 0,
+    "page_size": 20
+  },
+  "when_to_use": "Use for inspection and pagination.",
+  "how_to_adjust": "Offset and page_size count materials in materials mode and parts in fragments mode. Stable pagination requires the same corpus and ranking."
+}

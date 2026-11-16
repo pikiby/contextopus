@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+*.egg-info/
+build/
+dist/
+.claude/
+.pcw/
+.playwright-mcp/
+AGENTS.md
+modules/*/build/
+modules/*/dist/
+modules/*/*.egg-info/
+modules/*/src/*.egg-info/

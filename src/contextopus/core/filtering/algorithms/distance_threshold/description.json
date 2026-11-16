@@ -1,0 +1,26 @@
+{
+  "id": "distance_threshold",
+  "version": "2.0.0",
+  "purpose": "Keep requested units inside an absolute distance boundary, then cap results.",
+  "parameters_schema": {
+    "type": "object",
+    "properties": {
+      "N": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 1000
+      },
+      "d_max": {
+        "type": "number",
+        "minimum": 0
+      }
+    },
+    "additionalProperties": false
+  },
+  "defaults": {
+    "N": 20,
+    "d_max": 0.8
+  },
+  "when_to_use": "Use with a calibrated distance scale.",
+  "how_to_adjust": "Lower d_max for stricter relevance. N caps results after threshold evaluation. Materials group document keys first; fragments retain individual parts."
+}

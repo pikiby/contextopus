@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Contextopus · Library</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" aria-label="Library navigation">
+      <div class="brand">context<span>opus</span></div>
+      <div class="subtitle">A place for reusable context</div>
+      <div class="section-switch" role="group" aria-label="Sections">
+        <button type="button" data-section="library">Library</button>
+        <button type="button" data-section="contexts">Contexts and rules</button>
+        <button type="button" data-section="history">Edit history</button>
+      </div>
+      <div class="label">Your library</div>
+      <nav id="nav" aria-label="Modules"></nav>
+      <p id="nav-status" class="nav-status" role="status"></p>
+      <details><summary>Session sources</summary><div id="provider-settings"></div><p id="provider-status" role="status"></p></details>
+      <div class="bottom"><span class="dot">●</span> Live Core</div>
+      <button id="refresh" class="module-button" type="button">Refresh library</button>
+    </aside>
+    <section id="management" class="management" hidden></section>
+    <section class="catalog" aria-labelledby="heading">
+      <div class="list-head">
+        <div class="eyebrow">Contextopus / Library</div>
+        <h1 id="heading">Library</h1>
+        <p id="hint" class="muted">Loading connected modules…</p>
+        <div id="views" class="mode-switch" role="group" aria-label="Catalog views" hidden></div>
+        <form id="search-form">
+          <div class="mode-switch" role="group" aria-label="Search mode">
+            <button id="text-mode" type="button" class="mode active" aria-pressed="true">Text</button>
+            <button id="semantic-mode" type="button" class="mode" aria-pressed="false">Semantic</button>
+          </div>
+          <label class="sr-only" for="search">Search records</label>
+          <input class="search" id="search" type="search" placeholder="Search titles and descriptions…" autocomplete="off">
+          <button class="primary" id="run-search" type="submit">Search</button>
+          <p id="search-hint" class="search-hint">Text search matches titles and descriptions.</p>
+          <div class="filters">
+            <label><span>Collection</span><select id="collection"><option value="">All collections</option></select></label>
+            <label><span>Type</span><select id="type"><option value="">All types</option></select></label>
+          </div>
+          <div id="metadata-filters" class="filters" aria-label="Module metadata filters"></div>
+        </form>
+        <p id="count" class="count" role="status" aria-live="polite"></p>
+        <p id="warnings" class="warnings" role="status" hidden></p>
+      </div>
+      <div id="records" aria-label="Records"></div>
+      <div class="pagination"><button id="load-more" type="button" hidden>Load more</button></div>
+    </section>
+    <main class="detail" id="detail" aria-label="Record detail" tabindex="-1">
+      <div class="top"><span>Library</span><span class="readonly">Read-only</span></div>
+      <h2>Browse your context</h2><p class="muted">Select a module to read its records.</p>
+    </main>
+  </div>
+</body>
+</html>

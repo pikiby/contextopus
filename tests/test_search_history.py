@@ -1,0 +1,141 @@
+import json
+import hashlib
+from types import SimpleNamespace
+
+import pytest
+
+from contextopus.core.analytics import OperationJournal
+from contextopus.core.filtering import select
+from contextopus.core.search_history import SearchHistory
+from contextopus.core.storage import StorageLayout
+
+
+def event(tmp_path, count=3):
+    layout = StorageLayout(tmp_path)
+    instructions = layout.root / 'module-rules/chosen.md'
+    instructions.parent.mkdir(parents=True, exist_ok=True)
+    instructions.write_text('Original exact rules')
+    journal = OperationJournal(layout)
+    journal.search_operations['core.search'] = lambda context: hashlib.sha256(instructions.read_bytes()).hexdigest()
+    identifier = journal.begin(SimpleNamespace(workspace='chosen'), 'core.search', {
+        'query': 'private source query', 'purpose': 'Find required conditions', 'task_id': 'task-one'})
+    rows = [{'key': ['workspace', 'chosen', str(i)], 'revision': 'revision-' + str(i),
+             'distance': i / count, 'excerpt': 'private source body'} for i in range(count)]
+    result = select(rows, {'algorithm': 'nearest_n', 'parameters': {'N': 1}})
+    journal.finish(identifier, result=result, duration=0.5)
+    return journal, identifier
+
+
+def test_saved_pool_beyond_generic_summary_and_no_sources(tmp_path):
+    journal, identifier = event(tmp_path, 150)
+    evidence = SearchHistory(journal).read(identifier)
+    assert len(evidence['diagnostics']['candidates']) == 150
+    assert evidence['purpose'] == 'Find required conditions'
+    assert evidence['instructions_revision']
+    raw = journal.path.read_bytes()
+    assert b'private source body' not in raw and b'private source query' not in raw
+    with journal.connect() as db:
+        result = json.loads(db.execute('SELECT result FROM operations WHERE id=?', [identifier]).fetchone()[0])
+    assert 'candidates' not in result['diagnostics']
+    assert result['search_event_id'] == identifier
+
+
+def test_scope_frozen_pagination_and_rule_revision(tmp_path):
+    journal, identifier = event(tmp_path)
+    history = SearchHistory(journal)
+    snapshot = history.query(context='chosen', task_id='task-one')
+    assert [r['event_id'] for r in snapshot['events']] == [identifier]
+    assert history.query(context='other')['events'] == []
+    assert history.query(task_id='other')['events'] == []
+    revision = snapshot['events'][0]['instructions_revision']
+    (journal.layout.root / 'module-rules/chosen.md').write_text('Changed rules')
+    assert history.query(instructions_revision=revision)['events']
+    assert history.query(instructions_revision='unknown')['events'] == []
+    with pytest.raises(ValueError):
+        history.query(since='2026-10-15T00:00:00')
+    with pytest.raises(ValueError):
+        history.query(limit=1000)
+
+
+def test_replay_quantifies_supplied_labels_without_claiming_quality(tmp_path):
+    journal, identifier = event(tmp_path)
+    result = SearchHistory(journal).replay(identifier, {
+        'algorithm': 'nearest_n', 'parameters': {'N': 2}},
+        relevant_keys=[['workspace', 'chosen', '0'], ['workspace', 'chosen', '1']])
+    assert result['added'] == [['workspace', 'chosen', '1']]
+    assert result['label_comparison']['original']['recall'] == 0.5
+    assert result['label_comparison']['alternative']['recall'] == 1
+    assert result['quality_assessment'] == 'not_established'
+    assert result['scope'] == 'recorded_candidates_only'
+
+
+def test_absent_legacy_evidence_is_readonly(tmp_path):
+    journal = OperationJournal(StorageLayout(tmp_path / 'absent'))
+    assert SearchHistory(journal).query()['events'] == []
+    assert not journal.path.parent.exists()
+    with pytest.raises(ValueError, match='unavailable'):
+        SearchHistory(journal).read('unknown')
+
+
+def test_candidate_truncation_prevents_full_coverage_claim(tmp_path):
+    journal, identifier = event(tmp_path, 1001)
+    result = SearchHistory(journal).replay(identifier, {'algorithm': 'none'})
+    assert result['snapshot_truncated'] is True
+    assert result['quality_assessment'] == 'not_established'
+
+
+def test_fragment_replay_preserves_distinct_parts_of_same_material(tmp_path):
+    journal, identifier = event(tmp_path)
+    rows = [{'key': ['workspace', 'chosen', 'one'], 'part_index': i,
+             'revision': 'same', 'distance': i / 10} for i in range(2)]
+    original = select(rows, {'algorithm': 'none', 'parameters': {'page_size': 1}}, output='fragments')
+    journal.finish(identifier, result=original, duration=0.1)
+    replay = SearchHistory(journal).replay(identifier, {
+        'algorithm': 'none', 'parameters': {'page_size': 1, 'offset': 1}})
+    assert replay['added'][0]['part_index'] == 1
+    assert replay['removed'][0]['part_index'] == 0
+
+
+def test_legacy_snapshot_preserves_recorded_version_and_original_selection(tmp_path):
+    journal, identifier = event(tmp_path)
+    with journal.connect() as db:
+        diag = json.loads(db.execute('SELECT diagnostics FROM search_evidence WHERE event_id=?', [identifier]).fetchone()[0])
+        diag.update(version='1.0.0', deduplication_order='after_selection')
+        diag.pop('selection_contract')
+        diag.pop('evidence_format')
+        db.execute('UPDATE search_evidence SET diagnostics=? WHERE event_id=?', [json.dumps(diag), identifier])
+    replay = SearchHistory(journal).replay(identifier, {'algorithm': 'nearest_n', 'parameters': {'N': 2}})
+    assert replay['original']['version'] == '1.0.0'
+    assert replay['original']['deduplication_order'] == 'after_selection'
+    assert replay['original']['selection_contract'] is None
+    assert replay['alternative']['version'] == '2.0.0'
+    assert replay['alternative']['selection_contract'] == 2
+    assert replay['same_implementation'] is False
+    assert replay['original_execution_reproduced'] is False
+    assert replay['replay_kind'] == 'current_counterfactual'
+    assert replay['original_selection_complete'] is True
+    assert replay['added'] == [['workspace', 'chosen', '1']]
+
+
+def test_replay_names_missing_original_selection_beyond_snapshot(tmp_path):
+    journal, identifier = event(tmp_path, 1001)
+    rows = [{'key': ['demo', 'one', str(i)], 'distance': i / 1001} for i in range(1001)]
+    original = select(rows, {'algorithm': 'none', 'parameters': {'offset': 1000, 'page_size': 1}})
+    journal.finish(identifier, result=original, duration=.1)
+    replay = SearchHistory(journal).replay(identifier, {'algorithm': 'nearest_n', 'parameters': {'N': 1}},
+                                           relevant_keys=[['demo', 'one', '1000']])
+    assert replay['label_comparison']['original'] is None
+    assert replay['label_comparison']['original_recorded_subset']['labelled_hits'] == 0
+    assert replay['candidate_snapshot_truncated'] is True
+    assert replay['retrieval_truncated'] is False
+    assert replay['original_selection_complete'] is False
+    assert replay['removed'] == []  # Missing original keys cannot be reconstructed.
+    assert replay['original']['counts']['selected'] == 1
+
+
+def test_empty_recorded_snapshot_can_be_replayed(tmp_path):
+    journal, identifier = event(tmp_path)
+    journal.finish(identifier, result=select([], {'algorithm': 'nearest_n'}), duration=.1)
+    replay = SearchHistory(journal).replay(identifier, {'algorithm': 'nearest_n'})
+    assert replay['added'] == replay['removed'] == []
+    assert replay['original_selection_complete'] is True

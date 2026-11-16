@@ -1,0 +1,14 @@
+recursive-include src/contextopus/resources *.md *.yaml *.json
+recursive-include src/contextopus/core/filtering/algorithms *.json
+recursive-include examples *.py *.json *.md *.sql
+recursive-include docs *.md *.svg *.png *.gif
+include README.md
+include uv.lock
+recursive-include scripts *.py
+recursive-include distribution *.py *.sh *.ps1 *.md
+recursive-include plugins/contextopus *.json *.md *.svg
+recursive-include tests *.py *.md *.json *.jsonl *.yaml
+recursive-include modules/session-search *.py *.json *.md *.sql *.toml LICENSE NOTICE
+prune modules/session-search/build
+prune modules/session-search/dist
+global-exclude *.pyc *.pyo

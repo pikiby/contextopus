@@ -1,0 +1,9 @@
+{
+  "id": "session_search",
+  "version": "0.1.0",
+  "core_requires": ">=0.1,<1",
+  "contribution": {"factory": "contribution.py:contribute", "requires": ["zstandard>=0.22"]},
+  "procedures": "procedures",
+  "provider_settings": {"status": "session_search.status", "configure": "session_search.configure"},
+  "router": {"routes": [{"id": "search", "when": "List, find or read Codex, Claude Code, Antigravity, OpenCode and Crush session dialogue", "procedure": "session_search/search"}], "steps": []}
+}
